@@ -2,10 +2,6 @@
 - **Title**: Binance Futures Tracker
 - **Description**: Develop a command-line application in Golang that tracks and analyzes Binance Futures USDT trading pairs.
 
-**Roles**
-- **Your Role**: Senior Software Engineer
-- **My Role**: Senior Software Engineer
-
 **Key Features**
 1. **API Integration**: Connect to the Binance API to retrieve live prices of specified USDT trading pairs.
 2. **Data Analysis**:
