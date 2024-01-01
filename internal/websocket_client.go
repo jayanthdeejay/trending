@@ -27,10 +27,11 @@ type MarkPrice struct {
 }
 
 type SymbolData struct {
-	Prices        []float64 // Store recent prices for rate of change calculation
-	AvgRateChange float64   // Average rate of change over 12 hours
-	LastUpdated   time.Time // Time when the last update was received
-	Volume        float64   // Volume over the last 12 hours
+	Prices            []float64 // Store recent prices for rate of change calculation
+	AvgRateChange     float64   // Average rate of change over 12 hours
+	CurrentRateChange float64   // Current rate of change between streams
+	LastPrice         float64   // Last received price
+	LastUpdated       time.Time // Time when the last update was received
 }
 
 var symbolDataMap map[string]*SymbolData = make(map[string]*SymbolData)
@@ -77,6 +78,12 @@ func updateSymbolData(symbol string, price float64) {
 		symbolDataMap[symbol] = data
 	}
 
+	// Calculate current rate of change
+	if data.LastPrice != 0 {
+		data.CurrentRateChange = math.Abs(price - data.LastPrice)
+	}
+	data.LastPrice = price
+
 	// Add the new price to the slice
 	data.Prices = append(data.Prices, price)
 
@@ -85,7 +92,7 @@ func updateSymbolData(symbol string, price float64) {
 		data.Prices = data.Prices[1:]
 	}
 
-	// Calculate the rate of change and update the average
+	// Calculate the average rate of change
 	if len(data.Prices) > 1 {
 		var totalChange float64
 		for i := 1; i < len(data.Prices); i++ {
@@ -119,11 +126,11 @@ func displayTable() {
 
 	// Display top 20 symbols
 	fmt.Println("Top Active Symbols:")
-	fmt.Println("Symbol\t\tAvgRateChange\t\tVolume")
+	fmt.Println("Symbol\t\tAvgRateChange\t\tCurrentRateChange")
 	for i := 0; i < 61 && i < len(sortedSymbols); i++ {
 		symbol := sortedSymbols[i]
 		data := symbolDataMap[symbol]
-		fmt.Printf("%-20s %-20.4f %-20.4f\n", symbol, data.AvgRateChange, data.Volume)
+		fmt.Printf("%-20s %-20.4f %-20.4f\n", symbol, data.AvgRateChange, data.CurrentRateChange)
 	}
 }
 
