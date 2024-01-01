@@ -1,15 +1,22 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	ui "github.com/gizak/termui/v3"
+	"github.com/gizak/termui/v3/widgets"
 	"github.com/gorilla/websocket"
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api"
 )
 
 // StreamResponse represents the response from the Binance WebSocket stream
@@ -38,31 +45,39 @@ type SymbolData struct {
 var symbolDataMap map[string]*SymbolData = make(map[string]*SymbolData)
 
 func ConnectToWebSocket(symbols []string) {
-	var streams string
-	for _, symbol := range symbols {
-		// Symbols need to be lowercase
-		streams += fmt.Sprintf("%s@markPrice/", strings.ToLower(symbol))
-	}
-	streams = strings.TrimRight(streams, "/") // Remove the trailing slash
-
-	wsURL := fmt.Sprintf("wss://fstream.binance.com/stream?streams=%s", streams)
-	log.Println(wsURL)
-	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Fatal("dial:", err)
-	}
-	defer c.Close()
+	var c *websocket.Conn
+	var err error
+	reconnectInterval := 5 * time.Second
 
 	for {
+		if c == nil {
+			var streams string
+			for _, symbol := range symbols {
+				streams += fmt.Sprintf("%s@markPrice/", strings.ToLower(symbol))
+			}
+			streams = strings.TrimRight(streams, "/")
+
+			wsURL := fmt.Sprintf("wss://fstream.binance.com/stream?streams=%s", streams)
+			c, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
+			if err != nil {
+				log.Printf("WebSocket Dial Error: %v, retrying in %v", err, reconnectInterval)
+				time.Sleep(reconnectInterval)
+				continue
+			}
+			log.Println("Connected to WebSocket")
+		}
+
 		_, message, err := c.ReadMessage()
 		if err != nil {
-			log.Println("read:", err)
-			return
+			log.Printf("WebSocket Read Error: %v, reconnecting...", err)
+			c.Close()
+			c = nil
+			continue
 		}
 
 		var response StreamResponse
 		if err := json.Unmarshal(message, &response); err != nil {
-			log.Println("json unmarshal:", err)
+			log.Println("JSON unmarshal error:", err)
 			continue
 		}
 
@@ -150,32 +165,160 @@ func DisplayActiveSymbols() {
 }
 
 func displayTable() {
-	// Creating a slice for sorting
-	var sortedSymbols []string
-	for symbol := range symbolDataMap {
-		sortedSymbols = append(sortedSymbols, symbol)
+	if err := ui.Init(); err != nil {
+		log.Fatalf("failed to initialize termui: %v", err)
+	}
+	defer ui.Close()
+
+	grid := ui.NewGrid()
+	termWidth, termHeight := ui.TerminalDimensions()
+	grid.SetRect(0, 0, termWidth, termHeight)
+
+	table := widgets.NewTable()
+	table.TextStyle = ui.NewStyle(ui.ColorWhite)
+	table.RowSeparator = false
+
+	updateTable := func() {
+		table.Rows = [][]string{
+			{"Symbol", "AvgRateChange (12h)", "CurrentRateChange", "1h", "2h", "3h", "4h", "5h", "6h"},
+		}
+
+		var sortedSymbols []string
+		for symbol := range symbolDataMap {
+			sortedSymbols = append(sortedSymbols, symbol)
+		}
+
+		sort.Slice(sortedSymbols, func(i, j int) bool {
+			return symbolDataMap[sortedSymbols[i]].CurrentRateChange > symbolDataMap[sortedSymbols[j]].CurrentRateChange
+		})
+
+		for i := 0; i < 63 && i < len(sortedSymbols); i++ {
+			symbol := sortedSymbols[i]
+			data := symbolDataMap[symbol]
+			row := []string{
+				symbol,
+				strconv.FormatFloat(data.AvgRateChange, 'f', 5, 64),
+				strconv.FormatFloat(data.CurrentRateChange, 'f', 5, 64),
+			}
+			for j := 0; j < 6; j++ {
+				if j < len(data.HourlyAvgRateChange) {
+					row = append(row, strconv.FormatFloat(data.HourlyAvgRateChange[j], 'f', 5, 64))
+				} else {
+					row = append(row, "N/A")
+				}
+			}
+			table.Rows = append(table.Rows, row)
+		}
+
+		grid.Set(
+			ui.NewRow(1.0,
+				ui.NewCol(1.0, table),
+			),
+		)
 	}
 
-	// Sort symbols based on CurrentRateChange
-	sort.Slice(sortedSymbols, func(i, j int) bool {
-		return symbolDataMap[sortedSymbols[i]].CurrentRateChange > symbolDataMap[sortedSymbols[j]].CurrentRateChange
-	})
+	updateTable()
+	ui.Render(grid)
 
-	// Display top 63 symbols
-	fmt.Println("Top Active Symbols:")
-	fmt.Println("Symbol\t\tAvgRateChange (12h)\tCurrentRateChange\t\tHourly Change (Last 6h)")
-	for i := 0; i < 63 && i < len(sortedSymbols); i++ {
-		symbol := sortedSymbols[i]
-		data := symbolDataMap[symbol]
-		fmt.Printf("%-20s %-20.4f %-20.4f\t", symbol, data.AvgRateChange, data.CurrentRateChange)
-		for _, hourlyChange := range data.HourlyAvgRateChange {
-			fmt.Printf("%-10.4f ", hourlyChange)
+	table.TextStyle = ui.NewStyle(ui.ColorWhite)
+	table.RowSeparator = false
+
+	// Update and render the table in a ticker loop
+	ticker := time.NewTicker(3 * time.Second)
+	uiEvents := ui.PollEvents()
+	for {
+		select {
+		case <-ticker.C:
+			updateTable()
+			ui.Render(grid)
+		case e := <-uiEvents:
+			if e.ID == "q" || e.Type == ui.KeyboardEvent {
+				return
+			}
 		}
-		fmt.Println()
+	}
+}
+
+func writeToInfluxDB(writeAPI api.WriteAPI) {
+	for symbol, data := range symbolDataMap {
+		// Prepare fields for InfluxDB point
+		fields := map[string]interface{}{
+			"avg_rate_change":     data.AvgRateChange,
+			"current_rate_change": data.CurrentRateChange,
+		}
+
+		// Add last 6 hours' average rate changes
+		for i, rateChange := range data.HourlyAvgRateChange {
+			fields[fmt.Sprintf("hourly_avg_change_%dh", i+1)] = rateChange
+		}
+
+		// Create a point and add to batch
+		p := influxdb2.NewPoint(
+			"symbol_rate_change",
+			map[string]string{"symbol": symbol},
+			fields,
+			time.Now(),
+		)
+		writeAPI.WritePoint(p)
+	}
+	writeAPI.Flush()
+}
+
+func loadDataFromInfluxDB(queryAPI api.QueryAPI) {
+	fluxQuery := `from(bucket:"futures")
+								|> range(start: -12h)
+								|> filter(fn: (r) => r._measurement == "symbol_rate_change")
+								|> last()`
+
+	result, err := queryAPI.Query(context.Background(), fluxQuery)
+	if err != nil {
+		log.Fatalf("error querying data: %v", err)
+	}
+
+	for result.Next() {
+		if result.Record() != nil {
+			symbol := result.Record().Values()["symbol"].(string)
+			avgRateChange, ok := result.Record().Values()["avg_rate_change"].(float64)
+			if !ok {
+				avgRateChange = 0 // Default value if nil or not a float64
+			}
+			currentRateChange, ok := result.Record().Values()["current_rate_change"].(float64)
+			if !ok {
+				currentRateChange = 0 // Default value if nil or not a float64
+			}
+
+			data := &SymbolData{
+				AvgRateChange:     avgRateChange,
+				CurrentRateChange: currentRateChange,
+				// populate other fields as needed
+			}
+			symbolDataMap[symbol] = data
+		}
+	}
+
+	if err := result.Err(); err != nil {
+		log.Fatalf("error iterating over query result: %v", err)
 	}
 }
 
 func init() {
-	// Initialize any necessary data structures or goroutines
+	// Initialize the InfluxDB client and query API
+	influxToken := os.Getenv("INFLUXDB_TRENDING_TOKEN")
+	influxClient := influxdb2.NewClient(influxDBURL, influxToken)
+	queryAPI := influxClient.QueryAPI(orgName)
+	writeAPI := influxClient.WriteAPI(orgName, bucketName)
+
+	// Load data from InfluxDB
+	loadDataFromInfluxDB(queryAPI)
+
+	// Schedule writeToInfluxDB to run every minute
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		for range ticker.C {
+			writeToInfluxDB(writeAPI)
+		}
+	}()
+
+	// Start displaying symbols
 	go DisplayActiveSymbols()
 }
