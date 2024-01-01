@@ -27,11 +27,12 @@ type MarkPrice struct {
 }
 
 type SymbolData struct {
-	Prices            []float64 // Store recent prices for rate of change calculation
-	AvgRateChange     float64   // Average rate of change over 12 hours
-	CurrentRateChange float64   // Current rate of change between streams
-	LastPrice         float64   // Last received price
-	LastUpdated       time.Time // Time when the last update was received
+	Prices              []float64  // Store recent prices for rate of change calculation
+	AvgRateChange       float64    // Average rate of change over 12 hours
+	HourlyAvgRateChange [6]float64 // Average rate of change for each of the last 6 hours
+	CurrentRateChange   float64    // Current rate of change between streams
+	LastPrice           float64    // Last received price
+	LastUpdated         time.Time  // Time when the last update was received
 }
 
 var symbolDataMap map[string]*SymbolData = make(map[string]*SymbolData)
@@ -70,6 +71,7 @@ func ConnectToWebSocket(symbols []string) {
 }
 
 const windowSize = 12 * 60 * 60 / 3 // 12 hours window, assuming data every 3 seconds
+const pointsPerHour = 60 * 60 / 3   // Number of data points in an hour
 
 func updateSymbolData(symbol string, price float64) {
 	data, exists := symbolDataMap[symbol]
@@ -101,8 +103,43 @@ func updateSymbolData(symbol string, price float64) {
 		data.AvgRateChange = totalChange / float64(len(data.Prices)-1)
 	}
 
+	// Calculate hourly averages
+	for i := 0; i < 6; i++ {
+		endIndex := len(data.Prices) - i*pointsPerHour
+		if endIndex < 0 {
+			// If endIndex is negative, no data is available for this hour.
+			data.HourlyAvgRateChange[i] = 0
+			continue
+		}
+		startIndex := max(0, endIndex-pointsPerHour)
+		if startIndex >= endIndex {
+			// Not enough data points in this window
+			data.HourlyAvgRateChange[i] = 0
+			continue
+		}
+		data.HourlyAvgRateChange[i] = calculateAverageRateChange(data.Prices[startIndex:endIndex])
+	}
+
 	// Update last updated time
 	data.LastUpdated = time.Now()
+}
+
+func calculateAverageRateChange(prices []float64) float64 {
+	if len(prices) <= 1 {
+		return 0
+	}
+	var totalChange float64
+	for i := 1; i < len(prices); i++ {
+		totalChange += math.Abs(prices[i] - prices[i-1])
+	}
+	return totalChange / float64(len(prices)-1)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func DisplayActiveSymbols() {
@@ -119,18 +156,22 @@ func displayTable() {
 		sortedSymbols = append(sortedSymbols, symbol)
 	}
 
-	// Sort symbols based on AvgRateChange
+	// Sort symbols based on CurrentRateChange
 	sort.Slice(sortedSymbols, func(i, j int) bool {
-		return symbolDataMap[sortedSymbols[i]].AvgRateChange > symbolDataMap[sortedSymbols[j]].AvgRateChange
+		return symbolDataMap[sortedSymbols[i]].CurrentRateChange > symbolDataMap[sortedSymbols[j]].CurrentRateChange
 	})
 
-	// Display top 20 symbols
+	// Display top 63 symbols
 	fmt.Println("Top Active Symbols:")
-	fmt.Println("Symbol\t\tAvgRateChange\t\tCurrentRateChange")
-	for i := 0; i < 61 && i < len(sortedSymbols); i++ {
+	fmt.Println("Symbol\t\tAvgRateChange (12h)\tCurrentRateChange\t\tHourly Change (Last 6h)")
+	for i := 0; i < 63 && i < len(sortedSymbols); i++ {
 		symbol := sortedSymbols[i]
 		data := symbolDataMap[symbol]
-		fmt.Printf("%-20s %-20.4f %-20.4f\n", symbol, data.AvgRateChange, data.CurrentRateChange)
+		fmt.Printf("%-20s %-20.4f %-20.4f\t", symbol, data.AvgRateChange, data.CurrentRateChange)
+		for _, hourlyChange := range data.HourlyAvgRateChange {
+			fmt.Printf("%-10.4f ", hourlyChange)
+		}
+		fmt.Println()
 	}
 }
 
