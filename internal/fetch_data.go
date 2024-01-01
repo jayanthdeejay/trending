@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +20,30 @@ const (
 	bucketName               = "futures"
 )
 
+var UsdtSymbols = []string{
+	"1000BONKUSDT", "1000FLOKIUSDT", "1000LUNCUSDT", "1000PEPEUSDT", "1000RATSUSDT", "1000SATSUSDT", "1000SHIBUSDT", "1000XECUSDT", "1INCHUSDT",
+	"AAVEUSDT", "ACEUSDT", "ACHUSDT", "ADAUSDT", "AGIXUSDT", "AGLDUSDT", "ALGOUSDT", "ALICEUSDT", "ALPHAUSDT", "AMBUSDT", "ANKRUSDT", "ANTUSDT",
+	"APEUSDT", "API3USDT", "APTUSDT", "ARBUSDT", "ARKMUSDT", "ARKUSDT", "ARPAUSDT", "ARUSDT", "ASTRUSDT", "ATAUSDT", "ATOMUSDT", "AUCTIONUSDT",
+	"AUDIOUSDT", "AVAXUSDT", "AXSUSDT", "BADGERUSDT", "BAKEUSDT", "BALUSDT", "BANDUSDT", "BATUSDT", "BCHUSDT", "BEAMXUSDT", "BELUSDT", "BICOUSDT",
+	"BIGTIMEUSDT", "BLUEBIRDUSDT", "BLURUSDT", "BLZUSDT", "BNBUSDT", "BNTUSDT", "BNXUSDT", "BONDUSDT", "BSVUSDT", "BTCDOMUSDT", "BTCSTUSDT",
+	"BTCUSDT", "BTSUSDT", "C98USDT", "CAKEUSDT", "CELOUSDT", "CELRUSDT", "CFXUSDT", "CHRUSDT", "CHZUSDT", "CKBUSDT", "COCOSUSDT", "COMBOUSDT",
+	"COMPUSDT", "COTIUSDT", "CRVUSDT", "CTKUSDT", "CTSIUSDT", "CVCUSDT", "CVXUSDT", "CYBERUSDT", "DARUSDT", "DASHUSDT", "DEFIUSDT", "DENTUSDT",
+	"DGBUSDT", "DODOXUSDT", "DOGEUSDT", "DOTUSDT", "DUSKUSDT", "DYDXUSDT", "EDUUSDT", "EGLDUSDT", "ENJUSDT", "ENSUSDT", "EOSUSDT", "ETCUSDT",
+	"ETHUSDT", "ETHWUSDT", "FETUSDT", "FILUSDT", "FLMUSDT", "FLOWUSDT", "FOOTBALLUSDT", "FRONTUSDT", "FTMUSDT", "FTTUSDT", "FXSUSDT", "GALAUSDT",
+	"GALUSDT", "GASUSDT", "GLMRUSDT", "GMTUSDT", "GMXUSDT", "GRTUSDT", "GTCUSDT", "HBARUSDT", "HFTUSDT", "HIFIUSDT", "HIGHUSDT", "HNTUSDT",
+	"HOOKUSDT", "HOTUSDT", "ICPUSDT", "ICXUSDT", "IDEXUSDT", "IDUSDT", "ILVUSDT", "IMXUSDT", "INJUSDT", "IOSTUSDT", "IOTAUSDT", "IOTXUSDT",
+	"JASMYUSDT", "JOEUSDT", "JTOUSDT", "KASUSDT", "KAVAUSDT", "KEYUSDT", "KLAYUSDT", "KNCUSDT", "KSMUSDT", "LDOUSDT", "LEVERUSDT", "LINAUSDT",
+	"LINKUSDT", "LITUSDT", "LOOMUSDT", "LPTUSDT", "LQTYUSDT", "LRCUSDT", "LTCUSDT", "LUNA2USDT", "MAGICUSDT", "MANAUSDT", "MASKUSDT", "MATICUSDT",
+	"MAVUSDT", "MBLUSDT", "MDTUSDT", "MEMEUSDT", "MINAUSDT", "MKRUSDT", "MOVRUSDT", "MTLUSDT", "NEARUSDT", "NEOUSDT", "NFPUSDT", "NKNUSDT", "NMRUSDT",
+	"NTRNUSDT", "OCEANUSDT", "OGNUSDT", "OMGUSDT", "ONEUSDT", "ONGUSDT", "ONTUSDT", "OPUSDT", "ORBSUSDT", "ORDIUSDT", "OXTUSDT", "PENDLEUSDT",
+	"PEOPLEUSDT", "PERPUSDT", "PHBUSDT", "POLYXUSDT", "POWRUSDT", "PYTHUSDT", "QNTUSDT", "QTUMUSDT", "RADUSDT", "RAYUSDT", "RDNTUSDT", "REEFUSDT",
+	"RENUSDT", "RIFUSDT", "RLCUSDT", "RNDRUSDT", "ROSEUSDT", "RSRUSDT", "RUNEUSDT", "RVNUSDT", "SANDUSDT", "SCUSDT", "SEIUSDT", "SFPUSDT", "SKLUSDT",
+	"SLPUSDT", "SNTUSDT", "SNXUSDT", "SOLUSDT", "SPELLUSDT", "SRMUSDT", "SSVUSDT", "STEEMUSDT", "STGUSDT", "STMXUSDT", "STORJUSDT", "STPTUSDT",
+	"STRAXUSDT", "STXUSDT", "SUIUSDT", "SUPERUSDT", "SUSHIUSDT", "SXPUSDT", "THETAUSDT", "TIAUSDT", "TLMUSDT", "TOKENUSDT", "TOMOUSDT", "TRBUSDT",
+	"TRUUSDT", "TRXUSDT", "TUSDT", "TWTUSDT", "UMAUSDT", "UNFIUSDT", "UNIUSDT", "USDCUSDT", "USTCUSDT", "VETUSDT", "WAVESUSDT", "WAXPUSDT", "WLDUSDT",
+	"WOOUSDT", "XEMUSDT", "XLMUSDT", "XMRUSDT", "XRPUSDT", "XTZUSDT", "XVGUSDT", "XVSUSDT", "YFIUSDT", "YGGUSDT", "ZECUSDT", "ZENUSDT", "ZILUSDT", "ZRXUSDT",
+}
+
 // Fetch and save futures data for all USDT symbols
 func FetchAndSaveFuturesData() {
 	influxToken := os.Getenv("INFLUXDB_TRENDING_TOKEN")
@@ -28,28 +51,10 @@ func FetchAndSaveFuturesData() {
 	writeAPI := influxClient.WriteAPI(orgName, bucketName)
 	defer influxClient.Close()
 
-	symbols := readSymbols("../binance/usdt_symbols.txt")
-	for _, symbol := range symbols {
+	for _, symbol := range UsdtSymbols {
 		log.Println("Fetching data for", symbol)
 		fetchDataForSymbol(writeAPI, symbol)
 	}
-}
-
-// Read symbols from the usdt_symbols.txt file
-func readSymbols(filePath string) []string {
-	log.Println("Reading symbols from", filePath)
-	file, err := os.Open(filePath)
-	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-
-	var symbols []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		symbols = append(symbols, scanner.Text())
-	}
-	return symbols
 }
 
 // Fetch data for a specific symbol and write to InfluxDB
