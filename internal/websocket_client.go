@@ -1,12 +1,39 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// StreamResponse represents the response from the Binance WebSocket stream
+type StreamResponse struct {
+	Stream string    `json:"stream"`
+	Data   MarkPrice `json:"data"`
+}
+
+// MarkPrice represents the market price information in the stream
+type MarkPrice struct {
+	EventType string  `json:"e"`
+	Time      int64   `json:"E"`
+	Symbol    string  `json:"s"`
+	Price     float64 `json:"p,string"` // Note the use of 'string' in the tag to parse stringified float
+}
+
+type SymbolData struct {
+	Prices        []float64 // Store recent prices for rate of change calculation
+	AvgRateChange float64   // Average rate of change over 12 hours
+	LastUpdated   time.Time // Time when the last update was received
+	Volume        float64   // Volume over the last 12 hours
+}
+
+var symbolDataMap map[string]*SymbolData = make(map[string]*SymbolData)
 
 func ConnectToWebSocket(symbols []string) {
 	var streams string
@@ -30,6 +57,77 @@ func ConnectToWebSocket(symbols []string) {
 			log.Println("read:", err)
 			return
 		}
-		log.Printf("recv: %s", message)
+
+		var response StreamResponse
+		if err := json.Unmarshal(message, &response); err != nil {
+			log.Println("json unmarshal:", err)
+			continue
+		}
+
+		updateSymbolData(response.Data.Symbol, response.Data.Price)
 	}
+}
+
+const windowSize = 12 * 60 * 60 / 3 // 12 hours window, assuming data every 3 seconds
+
+func updateSymbolData(symbol string, price float64) {
+	data, exists := symbolDataMap[symbol]
+	if !exists {
+		data = &SymbolData{LastUpdated: time.Now()}
+		symbolDataMap[symbol] = data
+	}
+
+	// Add the new price to the slice
+	data.Prices = append(data.Prices, price)
+
+	// If the window size is exceeded, remove the oldest price
+	if len(data.Prices) > windowSize {
+		data.Prices = data.Prices[1:]
+	}
+
+	// Calculate the rate of change and update the average
+	if len(data.Prices) > 1 {
+		var totalChange float64
+		for i := 1; i < len(data.Prices); i++ {
+			totalChange += math.Abs(data.Prices[i] - data.Prices[i-1])
+		}
+		data.AvgRateChange = totalChange / float64(len(data.Prices)-1)
+	}
+
+	// Update last updated time
+	data.LastUpdated = time.Now()
+}
+
+func DisplayActiveSymbols() {
+	ticker := time.NewTicker(3 * time.Second)
+	for range ticker.C {
+		displayTable()
+	}
+}
+
+func displayTable() {
+	// Creating a slice for sorting
+	var sortedSymbols []string
+	for symbol := range symbolDataMap {
+		sortedSymbols = append(sortedSymbols, symbol)
+	}
+
+	// Sort symbols based on AvgRateChange
+	sort.Slice(sortedSymbols, func(i, j int) bool {
+		return symbolDataMap[sortedSymbols[i]].AvgRateChange > symbolDataMap[sortedSymbols[j]].AvgRateChange
+	})
+
+	// Display top 20 symbols
+	fmt.Println("Top Active Symbols:")
+	fmt.Println("Symbol\t\tAvgRateChange\t\tVolume")
+	for i := 0; i < 61 && i < len(sortedSymbols); i++ {
+		symbol := sortedSymbols[i]
+		data := symbolDataMap[symbol]
+		fmt.Printf("%-20s %-20.4f %-20.4f\n", symbol, data.AvgRateChange, data.Volume)
+	}
+}
+
+func init() {
+	// Initialize any necessary data structures or goroutines
+	go DisplayActiveSymbols()
 }
